@@ -1,10 +1,10 @@
+from __future__ import annotations
 from array import array
 import base64
 from concurrent import futures
-from dataclasses import dataclass
-from logging import INFO
 import logging
 import json
+import time
 import jsonschema
 from random import Random
 from typing import Dict, Tuple
@@ -23,14 +23,61 @@ class Voter():
         self.name = name
         self.group = group
         self.pub_key = pub_key
+        self._auth_state: AuthState = UnAuthenticatedState(self)
     def raise_challange(self) -> bytes:
-        self.challange = Random().randbytes(32)
-        return self.challange
+        if not isinstance(self._auth_state, UnAuthenticatedState):
+            self._auth_state.set_state(UnAuthenticatedState(self))
+        return self._auth_state.raise_challange()
     def authorize(self, sign: bytes) -> Tuple[bool, bytes]:
+        if isinstance(self._auth_state, RaiseChallangeState):
+            return self._auth_state.check_response(sign)
+        else:
+            return False, b''
+    def verify_token(self, token: bytes) -> bool:
+        if isinstance(self._auth_state, AuthenticatedState):
+            return self._auth_state.verify_token(token)
+        else:
+            logging.warn("Voter[{}] not authorized".format(self.name))
+            return False
+
+        
+    class JSONEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, Voter):
+                return {'name': obj.name, 'group': obj.group, 'public_key': base64.b64encode(obj.pub_key).decode('utf-8')}
+            # Let the base class default method raise the TypeError
+            return json.JSONEncoder.default(self, obj)
+    
+class AuthState():
+    def __init__(self, voter: Voter) -> None:
+        self.context: Voter = voter
+        self._state_name: str = "UNSPECIFY"
+    def __str__(self) -> str:
+        return self._state_name
+    def set_state(self, state: AuthState) -> None:
+        logging.debug('Voter[{}] from {} to {}'.format(self.context.name, self.context._auth_state, state))
+        self.context._auth_state = state
+
+class UnAuthenticatedState(AuthState):
+    def __init__(self, voter: Voter) -> None:
+        super().__init__(voter)
+        self._state_name: str = "UNAUTHENTICATE"
+    def raise_challange(self) -> bytes:
+        challange = Random().randbytes(32)
+        self.set_state(RaiseChallangeState(self.context, challange))
+        return challange
+
+class RaiseChallangeState(AuthState):
+    def __init__(self, voter: Voter, challange: bytes) -> None:
+        super().__init__(voter)
+        self.challange: bytes = challange
+        self._state_name: str = "CHALLANGING CLIENT"
+    def check_response(self, response: bytes) -> Tuple[bool,bytes]:
         try:
-            VerifyKey(self.pub_key).verify(smessage=self.challange, signature=sign)
-            self.token = Random().randbytes(32)
-            return True, self.token
+            VerifyKey(self.context.pub_key).verify(smessage=self.challange, signature=response)
+            authorized_token = Random().randbytes(32)
+            self.set_state(AuthenticatedState(self.context, authorized_token))
+            return True, authorized_token
         except ValueError as e:
             logging.warning("Voter[{}] authorize fail: {}".format(self.name, e))
             return False, b''
@@ -44,12 +91,17 @@ class Voter():
             logging.warning("Voter[{}] authorize fail: UNSPECIFY".format(self.name))
             return False, b''
 
-    class JSONEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, Voter):
-                return {'name': obj.name, 'group': obj.group, 'public_key': base64.b64encode(obj.pub_key).decode('utf-8')}
-            # Let the base class default method raise the TypeError
-            return json.JSONEncoder.default(self, obj)
+class AuthenticatedState(AuthState):
+    def __init__(self, voter: Voter, token: bytes) -> None:
+        super().__init__(voter)
+        self._state_name: str = "AUTHENTICATE"
+        self.token = token
+        self.expiry_time = time.time()
+    def verify_token(self, token: bytes) -> bool:
+        if self.expiry_time < time.time():
+            self.set_state(UnAuthenticatedState(self.context))
+            return False
+        return token == self.token
 
 class VotersDataLoader():
     def __init__(self, db_loc: str):
@@ -258,9 +310,10 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             authorized, token = self.db.voter(name).authorize(request.response.value)
             if authorized:
                 logging.info('voter[{}] is authorize with token'.format(name))
+                return voting_pb2.AuthToken(value=token)
             else:
                 logging.warning('voter[{}] is authentication failed'.format(name))
-            return voting_pb2.AuthToken(value=token)
+                return voting_pb2.AuthToken(value=b'')
         except KeyError:
             logging.warning('voter[{}] is not registed in server'.format(name))
             return voting_pb2.AuthToken(value=b'')
@@ -300,7 +353,7 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             self.db.save()
 
 if __name__ == '__main__':
-    logging.basicConfig(level=INFO)
+    logging.basicConfig(level=logging.INFO)
     srv = eVotingServer()
     srv.serve()
         

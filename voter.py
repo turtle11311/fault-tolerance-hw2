@@ -1,4 +1,5 @@
 from __future__ import print_function
+from asyncio.log import logger
 import base64
 from os import path
 import time
@@ -6,12 +7,13 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from nacl.public import PrivateKey
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import Base64Encoder
+from google.protobuf.timestamp_pb2 import Timestamp
 import logging
 import grpc
 import voting_pb2
 import voting_pb2_grpc
 
-voter_name = 'Hello1'
+voter_name = 'Hello'
 
 """
 KeyLoader loads private key from file, and derived the signing key and verify key from private key.
@@ -52,8 +54,21 @@ def run():
                 name=voting_pb2.VoterName(name=voter_name),
                 response=voting_pb2.Response(value=signature.signature)
             ))
-            if rsp.value != b'':
+            token = rsp.value
+            logging.debug('token[{}]'.format(token))
+            if token != b'':
                 logging.info('authorization successs')
+            ts = Timestamp()
+            ts.GetCurrentTime()
+            rsp = eVoting_stub.CreateElection(
+                voting_pb2.Election(
+                    name=voter_name, 
+                    groups=['students'], 
+                    choices=['1', '2', '3'], 
+                    end_date=ts,
+                    token=voting_pb2.AuthToken(value=token)))
+            print(rsp)
+            
         except grpc.RpcError as e:
             logging.error(e)
 

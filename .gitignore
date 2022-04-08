@@ -131,3 +131,5 @@ dmypy.json
 # prevent commit voter dbfiles
 voters.json
 *_key
+electionResult.json
+elections.json

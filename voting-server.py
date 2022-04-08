@@ -164,6 +164,7 @@ class ElectDataLoader():
                 elect_dbs.close()
                 logging.warning('{} not exist, create it'.format(self.db_loc))
             with open(self.Result_loc, 'w') as electResult_dbs:
+                json.dump([], electResult_dbs)
                 electResult_dbs.close()
                 logging.warning('{} not exist, create it'.format(self.Result_loc))
         except jsonschema.ValidationError as e:
@@ -185,8 +186,9 @@ class ElectDataLoader():
             electResult_dbs.close()
 
     def CreateElect(self, name: str, groups: array, choices: array, end_date: array):
-        # Check if election already exists
-        if name not in list(self.elections):
+        if 0:# check authentication token
+            return 1
+        elif name not in list(self.elections):# Check if election already exists
             # at least one group and one choice 
             if len(groups) and len(choices):
                 self.elections[name] = Election(name=name, groups=list(groups), choices=list(choices) ,end_date=str(end_date.ToJsonString()))
@@ -201,31 +203,40 @@ class ElectDataLoader():
             return 3
     
     def UpdateResultList(self,election_name:str, choice_name: str):
-        if election_name not in list(self.elections):
+        if 0: # check authentication token
+            return 1
+        elif election_name not in list(self.elections):
             return 2
-
-        election_index = list(self.elections).index(election_name)
-        with open(self.Result_loc, 'r') as electResult_dbs:
-            data = json.load(electResult_dbs)
-            electResult_dbs.close()
-        #logging.info(data[election_index]['voters']
-        return 0
-
+        elif 0: # check if group is  allowed
+            return 3
+        else:
+            election_index = list(self.elections).index(election_name)
+            with open(self.Result_loc, 'r') as electResult_dbs:
+                data = json.load(electResult_dbs)
+                electResult_dbs.close()
+            if 'Voter_name' in data[election_index]['voters']: # insert Voter_name
+                return 4
+            else:
+                with open(self.Result_loc, 'w') as electResult_dbs:
+                    data[election_index]['voters'].append('Voter_name') # insert Voter_name
+                    json.dump(data, fp=electResult_dbs)
+                    electResult_dbs.close()
+                return 0
+            
     def GetResultList(self, election_name:str):
         if election_name not in list(self.elections):
             # Non-existent election
-            return 1,None
+            return 1,[]
         else:
             election_index = list(self.elections).index(election_name)
             elecTime = Timestamp()
             CurrentTime = time.time()
             elecTime.FromJsonString(self.elections[election_name].end_date)
-            if elecTime.seconds < int(CurrentTime):
+            if int(elecTime.seconds) > int(CurrentTime): 
                 # The election is still ongoing. Election result is not available yet.
-                return 1,None
+                return 1,[]
             with open(self.Result_loc, 'r') as electResult_dbs:
                 data = json.load(electResult_dbs)
-                #logging.info(type(data[election_index]['choices']))
                 electResult_dbs.close()
             return 0,data[election_index]['choices']
 
@@ -257,16 +268,12 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
     def CreateElection(self,request, context):
         ElectionStatus = self.electDB.CreateElect(request.name, request.groups, request.choices, request.end_date)
         if ElectionStatus==0:
-            logging.info('Election created successfully')
             return voting_pb2.Status(code=ElectionStatus)
         elif ElectionStatus==1:
-            logging.warning('Invalid authentication token')
             return voting_pb2.Status(code=ElectionStatus)
         elif ElectionStatus==2:
-            logging.warning('Missing groups or choices specification')
             return voting_pb2.Status(code=ElectionStatus)
         else:
-            logging.warning('Unknown error')
             return voting_pb2.Status(code=ElectionStatus)
 
     def CastVote(self,request, context):
@@ -281,10 +288,6 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
         return voting_pb2.ElectionResult( \
             status = GetResult_status, \
             count = count)    
-    
-
-
-
     
     def serve(self):
         try:

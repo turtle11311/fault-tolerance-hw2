@@ -62,7 +62,7 @@ def run():
             message = Timestamp()
             message.FromJsonString('2023-01-01T00:00:00Z')
             election_status = Election_stub.CreateElection(voting_pb2.Election(
-                name='Election2',
+                name='Election1',
                 groups= {'student','teacher'},
                 choices= {'number1','number2'},
                 end_date= Timestamp(seconds=message.seconds,nanos=message.nanos),
@@ -84,7 +84,16 @@ def run():
                 election_name='Election1',
                 choice_name = 'number1',
                 token = voting_pb2.AuthToken(value=b'01234')))
-            #logging.info(castVote_status)
+            if castVote_status.code==0:
+                logging.info('Successful vote')
+            elif castVote_status.code==1:
+                logging.warning('Invalid authentication token')
+            elif castVote_status.code==2:
+                logging.warning('Invalid election name')
+            elif castVote_status.code==3:
+                logging.warning('The voter’s group is not allowed in the election')
+            else:
+                logging.warning('A previous vote has been cast.')
         except grpc.RpcError as e:
             logging.error(e)
 
@@ -92,8 +101,7 @@ def run():
             GetResult_stub = voting_pb2_grpc.eVotingStub(channel)
             getResult = GetResult_stub.GetResult(voting_pb2.ElectionName(name='Election1'))
             if getResult.status:
-                logging.warning('Non-existent election or')
-                logging.warning('The election is still ongoing. Election result is not available yet')
+                logging.warning('Non-existent election or The election is still ongoing. Election result is not available yet')
             else:
                 for i in range(len(getResult.count)):
                     print('choice name [{}] : {}'.format(getResult.count[i].choice_name, getResult.count[i].count))

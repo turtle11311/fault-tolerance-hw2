@@ -1,8 +1,6 @@
 from __future__ import print_function
-from asyncio.log import logger
 import base64
 from os import path
-import time
 from google.protobuf.timestamp_pb2 import Timestamp
 from nacl.public import PrivateKey
 from nacl.signing import SigningKey, VerifyKey
@@ -58,30 +56,19 @@ def run():
             logging.debug('token[{}]'.format(token))
             if token != b'':
                 logging.info('authorization successs')
-            ts = Timestamp()
-            ts.GetCurrentTime()
-            rsp = eVoting_stub.CreateElection(
-                voting_pb2.Election(
-                    name=voter_name, 
-                    groups=['students'], 
-                    choices=['1', '2', '3'], 
-                    end_date=ts,
-                    token=voting_pb2.AuthToken(value=token)))
-            print(rsp)
-            
         except grpc.RpcError as e:
             logging.error(e)
 
         try:
             Election_stub = voting_pb2_grpc.eVotingStub(channel)
-            message = Timestamp()
-            message.FromJsonString('2023-01-01T00:00:00Z')
+            end_time = Timestamp()
+            end_time.FromJsonString('2023-01-01T00:00:00Z')
             election_status = Election_stub.CreateElection(voting_pb2.Election(
                 name='Election1',
-                groups= {'student','teacher'},
-                choices= {'number1','number2'},
-                end_date= Timestamp(seconds=message.seconds,nanos=message.nanos),
-                token = voting_pb2.AuthToken(value=b'01234')))
+                groups=['student','teacher'],
+                choices=['number1','number2'],
+                end_date=end_time,
+                token=voting_pb2.AuthToken(value=token)))
             if election_status.code==0:
                 logging.info('Election created successfully')
             elif election_status.code==1:
@@ -97,8 +84,8 @@ def run():
             CastVote_stub = voting_pb2_grpc.eVotingStub(channel)
             castVote_status = CastVote_stub.CastVote(voting_pb2.Vote(
                 election_name='Election1',
-                choice_name = 'number1',
-                token = voting_pb2.AuthToken(value=b'01234')))
+                choice_name ='number1',
+                token=voting_pb2.AuthToken(value=token)))
             if castVote_status.code==0:
                 logging.info('Successful vote')
             elif castVote_status.code==1:

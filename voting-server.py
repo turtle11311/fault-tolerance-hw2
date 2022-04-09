@@ -273,6 +273,7 @@ class ElectDataLoader():
                 return 4
             else:
                 with open(self.Result_loc, 'w') as electResult_dbs:
+                    data[election_index]['choices'][ choice_name]+=1
                     data[election_index]['voters'].append(voter.name)
                     json.dump(data, fp=electResult_dbs)
                     electResult_dbs.close()

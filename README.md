@@ -21,26 +21,26 @@ Voter's singning key is derived by secrect key, the secret key is store in **vot
 And voter's verify key (public key) will show on the screen.
 
 
-# Getting Started
+## Getting Started
 
-## Run the server
+### Run the server
 ```
 python voting-server.py
 ```
-## Run the voter
+### Run the voter
 ```
 python voter.py
 ```
-## Get the public key
+### Get the public key
 ![](https://i.imgur.com/hsEtbpd.png)
 
-## Configure voters
+### Configure voters
 1. Create file "voters.json"
 2. Add voter record, public_key is encode by base64
 
 ![](https://i.imgur.com/9OwziLW.png)
 
-# Evaluation
+## Evaluation
 * We write "voterTest.py" to test all voter request scenarios, including success and failure cases.
 
 * The voter calls the gRPC stub, and the voter checks whether the response value is the expected value.

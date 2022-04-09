@@ -41,7 +41,7 @@ class ElectionOngoingException(Exception):
         super().__init__()
         self.election_name = election_name
     def __str__(self) -> str:
-        return "Election[{}] still ongoing. election result is not available yet.".format(self.voter_name, self.election_name)
+        return "Election[{}] still ongoing. election result is not available yet.".format(self.election_name)
 
 class VoterGroupError(Exception):
     def __init__(self, election_name: str, voter_name: str) -> None:

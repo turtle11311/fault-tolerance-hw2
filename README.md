@@ -38,7 +38,7 @@ python voter.py
 1. Create file "voters.json"
 2. Add voter record, public_key is encode by base64
 
-![](https://i.imgur.com/9OwziLW.png =82%x)
+![](https://i.imgur.com/9OwziLW.png)
 
 # Evaluation
 * We write "voterTest.py" to test all voter request scenarios, including success and failure cases.

@@ -1,17 +1,17 @@
 from __future__ import print_function
 import base64
 from os import path
-import time
 from google.protobuf.timestamp_pb2 import Timestamp
 from nacl.public import PrivateKey
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import Base64Encoder
+from google.protobuf.timestamp_pb2 import Timestamp
 import logging
 import grpc
 import voting_pb2
 import voting_pb2_grpc
 
-voter_name = 'Hello1'
+voter_name = 'Hello'
 
 """
 KeyLoader loads private key from file, and derived the signing key and verify key from private key.
@@ -52,21 +52,23 @@ def run():
                 name=voting_pb2.VoterName(name=voter_name),
                 response=voting_pb2.Response(value=signature.signature)
             ))
-            if rsp.value != b'':
+            token = rsp.value
+            logging.debug('token[{}]'.format(token))
+            if token != b'':
                 logging.info('authorization successs')
         except grpc.RpcError as e:
             logging.error(e)
 
         try:
             Election_stub = voting_pb2_grpc.eVotingStub(channel)
-            message = Timestamp()
-            message.FromJsonString('2023-01-01T00:00:00Z')
+            end_time = Timestamp()
+            end_time.FromJsonString('2023-01-01T00:00:00Z')
             election_status = Election_stub.CreateElection(voting_pb2.Election(
                 name='Election1',
-                groups= {'student','teacher'},
-                choices= {'number1','number2'},
-                end_date= Timestamp(seconds=message.seconds,nanos=message.nanos),
-                token = voting_pb2.AuthToken(value=b'01234')))
+                groups=['student','teacher'],
+                choices=['number1','number2'],
+                end_date=end_time,
+                token=voting_pb2.AuthToken(value=token)))
             if election_status.code==0:
                 logging.info('Election created successfully')
             elif election_status.code==1:
@@ -82,8 +84,8 @@ def run():
             CastVote_stub = voting_pb2_grpc.eVotingStub(channel)
             castVote_status = CastVote_stub.CastVote(voting_pb2.Vote(
                 election_name='Election1',
-                choice_name = 'number1',
-                token = voting_pb2.AuthToken(value=b'01234')))
+                choice_name ='number1',
+                token=voting_pb2.AuthToken(value=token)))
             if castVote_status.code==0:
                 logging.info('Successful vote')
             elif castVote_status.code==1:

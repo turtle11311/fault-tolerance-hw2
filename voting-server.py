@@ -1,10 +1,10 @@
+from __future__ import annotations
 from array import array
 import base64
 from concurrent import futures
-from dataclasses import dataclass
-from logging import INFO
 import logging
 import json
+import time
 import jsonschema
 from random import Random
 from typing import Dict, Tuple
@@ -23,14 +23,45 @@ class Voter():
         self.name = name
         self.group = group
         self.pub_key = pub_key
+        self._auth_state: AuthState = UnAuthenticatedState(self)
+        
+    class JSONEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, Voter):
+                return {'name': obj.name, 'group': obj.group, 'public_key': base64.b64encode(obj.pub_key).decode('utf-8')}
+            # Let the base class default method raise the TypeError
+            return json.JSONEncoder.default(self, obj)
+    
+class AuthState():
+    def __init__(self, voter: Voter) -> None:
+        self.context: Voter = voter
+        self._state_name: str = "UNSPECIFY"
+    def __str__(self) -> str:
+        return self._state_name
+    def set_state(self, state: AuthState) -> None:
+        logging.debug('Voter[{}] from {} to {}'.format(self.context.name, self.context._auth_state, state))
+        self.context._auth_state = state
+
+class UnAuthenticatedState(AuthState):
+    def __init__(self, voter: Voter) -> None:
+        super().__init__(voter)
+        self._state_name: str = "UNAUTHENTICATE"
     def raise_challange(self) -> bytes:
-        self.challange = Random().randbytes(32)
-        return self.challange
-    def authorize(self, sign: bytes) -> Tuple[bool, bytes]:
+        challange = Random().randbytes(32)
+        self.set_state(RaiseChallangeState(self.context, challange))
+        return challange
+
+class RaiseChallangeState(AuthState):
+    def __init__(self, voter: Voter, challange: bytes) -> None:
+        super().__init__(voter)
+        self.challange: bytes = challange
+        self._state_name: str = "CHALLANGING CLIENT"
+    def check_response(self, response: bytes) -> Tuple[bool,bytes]:
         try:
-            VerifyKey(self.pub_key).verify(smessage=self.challange, signature=sign)
-            self.token = Random().randbytes(32)
-            return True, self.token
+            VerifyKey(self.context.pub_key).verify(smessage=self.challange, signature=response)
+            authorized_token = Random().randbytes(32)
+            self.set_state(AuthenticatedState(self.context, authorized_token))
+            return True, authorized_token
         except ValueError as e:
             logging.warning("Voter[{}] authorize fail: {}".format(self.name, e))
             return False, b''
@@ -44,17 +75,23 @@ class Voter():
             logging.warning("Voter[{}] authorize fail: UNSPECIFY".format(self.name))
             return False, b''
 
-    class JSONEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, Voter):
-                return {'name': obj.name, 'group': obj.group, 'public_key': base64.b64encode(obj.pub_key).decode('utf-8')}
-            # Let the base class default method raise the TypeError
-            return json.JSONEncoder.default(self, obj)
+class AuthenticatedState(AuthState):
+    def __init__(self, voter: Voter, token: bytes) -> None:
+        super().__init__(voter)
+        self._state_name: str = "AUTHENTICATE"
+        self.token = token
+        self.expiry_time = time.time() + (60 * 60)
+    def verify_token(self, token: bytes) -> bool:
+        if self.expiry_time < time.time():
+            self.set_state(UnAuthenticatedState(self.context))
+            return False
+        return token == self.token
 
-class VotersDataLoader():
+class Authenticator():
     def __init__(self, db_loc: str):
         self.db_loc = db_loc
-        self.voters: Dict[str][Voter] = dict()
+        self.voters: Dict[str, Voter] = dict()
+        self.token_owner: Dict[bytes, str] = dict()
         self.schema = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": "VoterDB",
@@ -96,12 +133,34 @@ class VotersDataLoader():
         except jsonschema.ValidationError as e:
             logging.error('db file is corrupted: {}'.format(e))
             exit(1)
-    def voter(self, name: str) -> Voter:
-        return self.voters[name]
     def save(self):
         with open(self.db_loc, 'w') as voter_dbs:
             json.dump(list(map(lambda v: v[1],self.voters.items())),fp=voter_dbs,cls=Voter.JSONEncoder)
             voter_dbs.close()
+    def raise_challange(self, name: str) -> bytes:
+        voter = self.voters[name]
+        if not isinstance(voter._auth_state, UnAuthenticatedState):
+            voter._auth_state.set_state(UnAuthenticatedState(self))
+        return voter._auth_state.raise_challange()
+    def authorize(self, name: str, sign: bytes) -> Tuple[bool, bytes]:
+        voter = self.voters[name]
+        if isinstance(voter._auth_state, RaiseChallangeState):
+            ok, token = voter._auth_state.check_response(sign)
+            if ok:
+                self.token_owner[token] = name
+            return ok, token
+        else:
+            return False, b''
+    def verify_token(self, token: bytes) -> Voter:
+        name = self.token_owner[token]
+        voter = self.voters[name]
+        if isinstance(voter._auth_state, AuthenticatedState):
+            if voter._auth_state.verify_token(token):
+                return voter
+            else:
+                return None
+        else:
+            return None
 
 class Election():
     def __init__(self, name: str, groups: array, choices: array, end_date: str) -> None:
@@ -121,7 +180,7 @@ class ElectDataLoader():
     def __init__(self, db_loc: str):
         self.db_loc = db_loc
         self.Result_loc = 'electionResult.json'
-        self.elections: Dict[str][Election] = dict()
+        self.elections: Dict[str, Election] = dict()
         self.schema = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": "ElectDB",
@@ -153,7 +212,7 @@ class ElectDataLoader():
             with open(self.db_loc, 'r') as elect_dbs:
                 elect_collections = json.load(elect_dbs)
                 jsonschema.validate( elect_collections, schema=self.schema)
-                for elect_data in  elect_collections:
+                for elect_data in elect_collections:
                     name = elect_data['name']
                     groups = elect_data['groups']
                     choices = elect_data['choices']
@@ -171,7 +230,7 @@ class ElectDataLoader():
             logging.error('db file is corrupted: {}'.format(e))
             exit(1)
 
-    def CreateResultList(self,  name: str, choices: array):
+    def CreateResultList(self, name: str, choices: array):
         with open(self.Result_loc, 'r') as electResult_dbs:
             data = json.load(electResult_dbs)
             electResult_dbs.close()
@@ -186,9 +245,7 @@ class ElectDataLoader():
             electResult_dbs.close()
 
     def CreateElect(self, name: str, groups: array, choices: array, end_date: array):
-        if 0:# check authentication token
-            return 1
-        elif name not in list(self.elections):# Check if election already exists
+        if name not in list(self.elections): # Check if election already exists
             # at least one group and one choice 
             if len(groups) and len(choices):
                 self.elections[name] = Election(name=name, groups=list(groups), choices=list(choices) ,end_date=str(end_date.ToJsonString()))
@@ -196,37 +253,36 @@ class ElectDataLoader():
                     json.dump(list(map(lambda v: v[1],self.elections.items())),fp=elect_dbs,cls=Election.JSONEncoder)
                     elect_dbs.close()
                 self.CreateResultList(name=name, choices=list(choices))
+                print(self.elections)
                 return 0
             elif not len(groups) or not len(choices):
                 return 2
         else:
             return 3
     
-    def UpdateResultList(self,election_name:str, choice_name: str):
-        if 0: # check authentication token
-            return 1
-        elif election_name not in list(self.elections):
-            return 2
-        elif 0: # check if group is  allowed
+    def UpdateResultList(self, voter: Voter, election_name: str, choice_name: str):
+        target_election:Election = self.elections[election_name]
+        if voter.group in target_election.groups:
             return 3
         else:
             election_index = list(self.elections).index(election_name)
             with open(self.Result_loc, 'r') as electResult_dbs:
                 data = json.load(electResult_dbs)
                 electResult_dbs.close()
-            if 'Voter_name' in data[election_index]['voters']: # insert Voter_name
+            if voter.name in data[election_index]['voters']:
                 return 4
             else:
                 with open(self.Result_loc, 'w') as electResult_dbs:
-                    data[election_index]['voters'].append('Voter_name') # insert Voter_name
+                    data[election_index]['choices'][ choice_name]+=1
+                    data[election_index]['voters'].append(voter.name)
                     json.dump(data, fp=electResult_dbs)
                     electResult_dbs.close()
                 return 0
             
     def GetResultList(self, election_name:str):
-        if election_name not in list(self.elections):
+        if election_name not in self.elections:
             # Non-existent election
-            return 1,[]
+            return 1, []
         else:
             election_index = list(self.elections).index(election_name)
             elecTime = Timestamp()
@@ -242,46 +298,49 @@ class ElectDataLoader():
 
 class eVotingServer(voting_pb2_grpc.eVotingServicer):
     def __init__(self) -> None:
-        self.db = VotersDataLoader('voters.json')
+        self.authenticator = Authenticator('voters.json')
         self.electDB = ElectDataLoader('elections.json')
     def PreAuth(self, request, context):
         name = request.name
         try: 
-            challange = self.db.voter(name).raise_challange()
+            challange = self.authenticator.raise_challange(name)
             return voting_pb2.Challenge(value=challange)
         except KeyError:
             logging.warning('voter[{}] is not registed in server'.format(name))
             return voting_pb2.Challenge(value=b'')
     def Auth(self, request, context):
         name = request.name.name
+        signature = request.response.value
         try:
-            authorized, token = self.db.voter(name).authorize(request.response.value)
+            authorized, token = self.authenticator.authorize(name, signature)
             if authorized:
                 logging.info('voter[{}] is authorize with token'.format(name))
+                return voting_pb2.AuthToken(value=token)
             else:
                 logging.warning('voter[{}] is authentication failed'.format(name))
-            return voting_pb2.AuthToken(value=token)
+                return voting_pb2.AuthToken(value=b'')
         except KeyError:
             logging.warning('voter[{}] is not registed in server'.format(name))
             return voting_pb2.AuthToken(value=b'')
 
-    def CreateElection(self,request, context):
+    def CreateElection(self, request, context):
+        token = request.token.value
+        voter = self.authenticator.verify_token(token)
+        if voter == None:
+            return voting_pb2.Status(code=1)
         ElectionStatus = self.electDB.CreateElect(request.name, request.groups, request.choices, request.end_date)
-        if ElectionStatus==0:
-            return voting_pb2.Status(code=ElectionStatus)
-        elif ElectionStatus==1:
-            return voting_pb2.Status(code=ElectionStatus)
-        elif ElectionStatus==2:
-            return voting_pb2.Status(code=ElectionStatus)
-        else:
-            return voting_pb2.Status(code=ElectionStatus)
+        return voting_pb2.Status(code=ElectionStatus)
 
     def CastVote(self,request, context):
-        CastVote_status = self.electDB.UpdateResultList(request.election_name,request.choice_name)
+        token = request.token.value
+        voter = self.authenticator.verify_token(token)
+        if voter == None:
+            return voting_pb2.Status(code=1)
+        CastVote_status = self.electDB.UpdateResultList(voter, request.election_name, request.choice_name)
         return voting_pb2.Status(code=CastVote_status)
 
     def GetResult(self,request, context):
-        GetResult_status,GetResult_dic = self.electDB.GetResultList(request.name)
+        GetResult_status, GetResult_dic = self.electDB.GetResultList(request.name)
         count = []
         for key in GetResult_dic:
             count.append(voting_pb2.VoteCount(choice_name=key, count=GetResult_dic[key]))
@@ -297,10 +356,10 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             self._grpc_server.start()
             self._grpc_server.wait_for_termination()
         except KeyboardInterrupt:
-            self.db.save()
+            self.authenticator.save()
 
 if __name__ == '__main__':
-    logging.basicConfig(level=INFO)
+    logging.basicConfig(level=logging.INFO)
     srv = eVotingServer()
     srv.serve()
         

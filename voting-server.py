@@ -2,12 +2,13 @@ from __future__ import annotations
 from array import array
 import base64
 from concurrent import futures
+from csv import excel_tab
 import logging
 import json
 import time
 import jsonschema
 from random import Random
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import time
 from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -17,6 +18,47 @@ from nacl.exceptions import ValueError, BadSignatureError
 import grpc
 import voting_pb2
 import voting_pb2_grpc
+
+class TokenInvalidError(Exception):
+    def __str__(self) -> str:
+        return "token Invalid"
+
+class ElectionSpecError(Exception):
+    def __init__(self, election_name: str) -> None:
+        super().__init__()
+        self.election_name = election_name
+    def __str__(self) -> str:
+        return "Election[{}] provide wrong parameters".format(self.election_name)
+
+class InvalidElecitonNameError(Exception):
+    def __init__(self, election_name: str) -> None:
+        super().__init__()
+        self.election_name = election_name
+    def __str__(self) -> str:
+        return "Election[{}] not exists".format(self.election_name)
+
+class ElectionOngoingException(Exception):
+    def __init__(self, election_name: str) -> None:
+        super().__init__()
+        self.election_name = election_name
+    def __str__(self) -> str:
+        return "Election[{}] still ongoing. election result is not available yet.".format(self.voter_name, self.election_name)
+
+class VoterGroupError(Exception):
+    def __init__(self, election_name: str, voter_name: str) -> None:
+        super().__init__()
+        self.election_name = election_name
+        self.voter_name = voter_name
+    def __str__(self) -> str:
+        return "Voter[{}] isn't allow for election {}".format(self.voter_name, self.election_name)
+
+class HasBeenVotedError(Exception):
+    def __init__(self, election_name: str, voter_name: str) -> None:
+        super().__init__()
+        self.election_name = election_name
+        self.voter_name = voter_name
+    def __str__(self) -> str:
+        return "Voter[{}] is casted before in election {}".format(self.voter_name, self.election_name)
 
 class Voter():
     def __init__(self, name: str, group: str, pub_key: bytes) -> None:
@@ -81,11 +123,12 @@ class AuthenticatedState(AuthState):
         self._state_name: str = "AUTHENTICATE"
         self.token = token
         self.expiry_time = time.time() + (60 * 60)
-    def verify_token(self, token: bytes) -> bool:
+    def verify_token(self, token: bytes) -> None:
         if self.expiry_time < time.time():
             self.set_state(UnAuthenticatedState(self.context))
-            return False
-        return token == self.token
+            raise TokenInvalidError()
+        if token != self.token:
+            raise TokenInvalidError()
 
 class Authenticator():
     def __init__(self, db_loc: str):
@@ -140,7 +183,7 @@ class Authenticator():
     def raise_challange(self, name: str) -> bytes:
         voter = self.voters[name]
         if not isinstance(voter._auth_state, UnAuthenticatedState):
-            voter._auth_state.set_state(UnAuthenticatedState(self))
+            voter._auth_state.set_state(UnAuthenticatedState(voter))
         return voter._auth_state.raise_challange()
     def authorize(self, name: str, sign: bytes) -> Tuple[bool, bytes]:
         voter = self.voters[name]
@@ -155,12 +198,9 @@ class Authenticator():
         name = self.token_owner[token]
         voter = self.voters[name]
         if isinstance(voter._auth_state, AuthenticatedState):
-            if voter._auth_state.verify_token(token):
-                return voter
-            else:
-                return None
+            voter._auth_state.verify_token(token)
         else:
-            return None
+            raise TokenInvalidError()
 
 class Election():
     def __init__(self, name: str, groups: array, choices: array, end_date: str) -> None:
@@ -245,56 +285,53 @@ class ElectDataLoader():
             electResult_dbs.close()
 
     def CreateElect(self, name: str, groups: array, choices: array, end_date: array):
-        if name not in list(self.elections): # Check if election already exists
-            # at least one group and one choice 
-            if len(groups) and len(choices):
-                self.elections[name] = Election(name=name, groups=list(groups), choices=list(choices) ,end_date=str(end_date.ToJsonString()))
-                with open(self.db_loc, 'w') as elect_dbs:
-                    json.dump(list(map(lambda v: v[1],self.elections.items())),fp=elect_dbs,cls=Election.JSONEncoder)
-                    elect_dbs.close()
-                self.CreateResultList(name=name, choices=list(choices))
-                print(self.elections)
-                return 0
-            elif not len(groups) or not len(choices):
-                return 2
-        else:
-            return 3
+        # election is existing error
+        if name in self.elections:
+            raise ElectionSpecError(name)
+        # at least one group and one choice 
+        if not len(groups) or not len(choices):
+            raise ElectionSpecError(name)
+        self.elections[name] = Election(name=name, groups=list(groups), choices=list(choices) ,end_date=str(end_date.ToJsonString()))
+        with open(self.db_loc, 'w') as elect_dbs:
+            json.dump(list(map(lambda v: v[1],self.elections.items())),fp=elect_dbs,cls=Election.JSONEncoder)
+            elect_dbs.close()
+        self.CreateResultList(name=name, choices=list(choices))
     
     def UpdateResultList(self, voter: Voter, election_name: str, choice_name: str):
-        target_election:Election = self.elections[election_name]
-        if voter.group in target_election.groups:
-            return 3
-        else:
-            election_index = list(self.elections).index(election_name)
-            with open(self.Result_loc, 'r') as electResult_dbs:
-                data = json.load(electResult_dbs)
-                electResult_dbs.close()
-            if voter.name in data[election_index]['voters']:
-                return 4
-            else:
-                with open(self.Result_loc, 'w') as electResult_dbs:
-                    data[election_index]['choices'][ choice_name]+=1
-                    data[election_index]['voters'].append(voter.name)
-                    json.dump(data, fp=electResult_dbs)
-                    electResult_dbs.close()
-                return 0
+        try:
+            election = self.elections[election_name]
+        except KeyError:
+            raise InvalidElecitonNameError(election_name)
+        
+        if voter.group not in election.groups:
+            raise VoterGroupError(election_name, voter)
+        election_index = list(self.elections).index(election_name)
+        with open(self.Result_loc, 'r') as electResult_dbs:
+            data = json.load(electResult_dbs)
+            electResult_dbs.close()
+        if voter.name in data[election_index]['voters']:
+            raise HasBeenVotedError(election_name, voter.name)
+        with open(self.Result_loc, 'w') as electResult_dbs:
+            data[election_index]['choices'][ choice_name]+=1
+            data[election_index]['voters'].append(voter.name)
+            json.dump(data, fp=electResult_dbs)
+            electResult_dbs.close()
             
-    def GetResultList(self, election_name:str):
+    def GetResultList(self, election_name: str) -> List[Election]:
         if election_name not in self.elections:
-            # Non-existent election
-            return 1, []
-        else:
-            election_index = list(self.elections).index(election_name)
-            elecTime = Timestamp()
-            CurrentTime = time.time()
-            elecTime.FromJsonString(self.elections[election_name].end_date)
-            if int(elecTime.seconds) > int(CurrentTime): 
-                # The election is still ongoing. Election result is not available yet.
-                return 1,[]
-            with open(self.Result_loc, 'r') as electResult_dbs:
-                data = json.load(electResult_dbs)
-                electResult_dbs.close()
-            return 0,data[election_index]['choices']
+            raise InvalidElecitonNameError(election_name)
+
+        election_index = list(self.elections).index(election_name)
+        elecTime = Timestamp()
+        CurrentTime = time.time()
+        elecTime.FromJsonString(self.elections[election_name].end_date)
+        if int(elecTime.seconds) > int(CurrentTime): 
+            # The election is still ongoing. Election result is not available yet.
+            return 1,[]
+        with open(self.Result_loc, 'r') as electResult_dbs:
+            data = json.load(electResult_dbs)
+            electResult_dbs.close()
+        return data[election_index]['choices']
 
 class eVotingServer(voting_pb2_grpc.eVotingServicer):
     def __init__(self) -> None:
@@ -324,29 +361,64 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             return voting_pb2.AuthToken(value=b'')
 
     def CreateElection(self, request, context):
-        token = request.token.value
-        voter = self.authenticator.verify_token(token)
-        if voter == None:
-            return voting_pb2.Status(code=1)
-        ElectionStatus = self.electDB.CreateElect(request.name, request.groups, request.choices, request.end_date)
-        return voting_pb2.Status(code=ElectionStatus)
+        status = 0
+        try:
+            token = request.token.value
+            self.authenticator.verify_token(token)
+            self.electDB.CreateElect(request.name, request.groups, request.choices, request.end_date)
+        except TokenInvalidError as e:
+            logging.warning(e)
+            status = 1
+        except ElectionSpecError as e:
+            logging.warning(e)
+            status = 2
+        except Exception as e:
+            logging.warning(e)
+            # Unknown error
+            status = 3
+        finally:
+            return voting_pb2.Status(code=status)
 
-    def CastVote(self,request, context):
-        token = request.token.value
-        voter = self.authenticator.verify_token(token)
-        if voter == None:
-            return voting_pb2.Status(code=1)
-        CastVote_status = self.electDB.UpdateResultList(voter, request.election_name, request.choice_name)
-        return voting_pb2.Status(code=CastVote_status)
+    def CastVote(self, request, context):
+        status = 0
+        try:
+            token = request.token.value
+            voter = self.authenticator.verify_token(token)
+            self.electDB.UpdateResultList(voter, request.election_name, request.choice_name)
+            return voting_pb2.Status(code=0)
+        except TokenInvalidError as e:
+            logging.warning(e)
+            status = 1
+        except InvalidElecitonNameError as e:
+            logging.warning(e)
+            status = 2
+        except VoterGroupError as e:
+            logging.warning(e)
+            status = 3
+        except HasBeenVotedError as e:
+            logging.warning(e)
+            status = 4
+        except Exception as e:
+            logging.warning(e.with_traceback())
+            # Unknown error
+            status = 5
+        finally:
+            return voting_pb2.Status(code=status)
 
     def GetResult(self,request, context):
-        GetResult_status, GetResult_dic = self.electDB.GetResultList(request.name)
-        count = []
-        for key in GetResult_dic:
-            count.append(voting_pb2.VoteCount(choice_name=key, count=GetResult_dic[key]))
-        return voting_pb2.ElectionResult( \
-            status = GetResult_status, \
-            count = count)    
+        status = 0
+        try:
+            GetResult_dic = self.electDB.GetResultList(request.name)
+            count = []
+            for key in GetResult_dic:
+                count.append(voting_pb2.VoteCount(choice_name=key, count=GetResult_dic[key]))
+        except InvalidElecitonNameError as e:
+            logging.warning(e)
+            status = 1
+        finally:
+            return voting_pb2.ElectionResult( \
+                status = status, \
+                count = count)
     
     def serve(self):
         try:

@@ -2,7 +2,6 @@ from __future__ import annotations
 from array import array
 import base64
 from concurrent import futures
-from csv import excel_tab
 import logging
 import json
 import time
@@ -195,8 +194,12 @@ class Authenticator():
         else:
             return False, b''
     def verify_token(self, token: bytes) -> Voter:
-        name = self.token_owner[token]
-        voter = self.voters[name]
+        try:
+            name = self.token_owner[token]
+            voter = self.voters[name]
+        except KeyError:
+            raise TokenInvalidError()
+
         if isinstance(voter._auth_state, AuthenticatedState):
             voter._auth_state.verify_token(token)
             return voter
@@ -261,6 +264,7 @@ class ElectDataLoader():
                     self.elections[name] = Election(name=name, groups=groups, choices=choices ,end_date=end_date)
         except FileNotFoundError:
             with open(self.db_loc, 'w') as elect_dbs:
+                json.dump([], elect_dbs)
                 elect_dbs.close()
                 logging.warning('{} not exist, create it'.format(self.db_loc))
             with open(self.Result_loc, 'w') as electResult_dbs:

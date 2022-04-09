@@ -199,6 +199,7 @@ class Authenticator():
         voter = self.voters[name]
         if isinstance(voter._auth_state, AuthenticatedState):
             voter._auth_state.verify_token(token)
+            return voter
         else:
             raise TokenInvalidError()
 
@@ -302,9 +303,8 @@ class ElectDataLoader():
             election = self.elections[election_name]
         except KeyError:
             raise InvalidElecitonNameError(election_name)
-        
         if voter.group not in election.groups:
-            raise VoterGroupError(election_name, voter)
+            raise VoterGroupError(election_name, voter.name)
         election_index = list(self.elections).index(election_name)
         with open(self.Result_loc, 'r') as electResult_dbs:
             data = json.load(electResult_dbs)
@@ -312,7 +312,7 @@ class ElectDataLoader():
         if voter.name in data[election_index]['voters']:
             raise HasBeenVotedError(election_name, voter.name)
         with open(self.Result_loc, 'w') as electResult_dbs:
-            data[election_index]['choices'][ choice_name]+=1
+            data[election_index]['choices'][choice_name]+=1
             data[election_index]['voters'].append(voter.name)
             json.dump(data, fp=electResult_dbs)
             electResult_dbs.close()
@@ -385,7 +385,6 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             token = request.token.value
             voter = self.authenticator.verify_token(token)
             self.electDB.UpdateResultList(voter, request.election_name, request.choice_name)
-            return voting_pb2.Status(code=0)
         except TokenInvalidError as e:
             logging.warning(e)
             status = 1

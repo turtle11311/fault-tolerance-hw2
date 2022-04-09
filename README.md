@@ -44,7 +44,7 @@ python voter.py
 * We write "voterTest.py" to test all voter request scenarios, including success and failure cases.
 
 * The voter calls the gRPC stub, and the voter checks whether the response value is the expected value.
-```python=
+```python
 try:
     print('\n【Test "CreateElection" function】')
     Election_stub = voting_pb2_grpc.eVotingStub(channel)

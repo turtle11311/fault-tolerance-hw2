@@ -331,7 +331,7 @@ class ElectDataLoader():
         elecTime.FromJsonString(self.elections[election_name].end_date)
         if int(elecTime.seconds) > int(CurrentTime): 
             # The election is still ongoing. Election result is not available yet.
-            return 1,[]
+            raise ElectionOngoingException(election_name)
         with open(self.Result_loc, 'r') as electResult_dbs:
             data = json.load(electResult_dbs)
             electResult_dbs.close()
@@ -417,6 +417,9 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
             for key in GetResult_dic:
                 count.append(voting_pb2.VoteCount(choice_name=key, count=GetResult_dic[key]))
         except InvalidElecitonNameError as e:
+            logging.warning(e)
+            status = 1
+        except ElectionOngoingException as e:
             logging.warning(e)
             status = 1
         finally:

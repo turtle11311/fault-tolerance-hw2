@@ -57,8 +57,8 @@ try:
         end_date=end_time,
         token=voting_pb2.AuthToken(value=token)))
     if election_status.code==0:
-       print('-> Test "Election create" success!')
-       logging.info('Election created successfully')
+        print('-> Test "Election create" success!')
+        logging.info('Election created successfully')
 except grpc.RpcError as e:
     logging.error(e)
 ```

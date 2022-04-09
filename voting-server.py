@@ -407,6 +407,7 @@ class eVotingServer(voting_pb2_grpc.eVotingServicer):
 
     def GetResult(self,request, context):
         status = 0
+        count = []
         try:
             GetResult_dic = self.electDB.GetResultList(request.name)
             count = []
